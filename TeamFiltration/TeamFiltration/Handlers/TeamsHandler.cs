@@ -50,17 +50,7 @@ namespace TeamFiltration.Handlers
 
             _teamsClient = new HttpClient(httpClientHandler);
             _teamsClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {getBearToken.access_token}");
-            /*
-            teamsClient.DefaultRequestHeaders.Add("x-client-current-telemetry", " 2|29,1|,,,,,");
-            teamsClient.DefaultRequestHeaders.Add("x-client-CPU", "x86");
-            teamsClient.DefaultRequestHeaders.Add("x-client-Ver", "2.0.4");
-            teamsClient.DefaultRequestHeaders.Add("x-client-brkrver", "3.3.9");
-            teamsClient.DefaultRequestHeaders.Add("x-client-DM", "SM-G955F");
-            teamsClient.DefaultRequestHeaders.Add("x-client-OS", "25");
-            teamsClient.DefaultRequestHeaders.Add("x-app-ver", "1416/1.0.0.2021012201");
-            teamsClient.DefaultRequestHeaders.Add("x-client-SKU", "MSAL.Android");
-            teamsClient.DefaultRequestHeaders.Add("x-app-name", "com.microsoft.teams");
-            */
+
             _teamsClient.DefaultRequestHeaders.Add("User-Agent", teamFiltrationConfig.TeamFiltrationConfig.UserAgent);
             _teamsClient.DefaultRequestHeaders.Add("x-ms-client-caller", "x-ms-client-caller");
             _teamsClient.DefaultRequestHeaders.Add("x-ms-client-version", "27/1.0.0.2021011237");
@@ -110,7 +100,6 @@ namespace TeamFiltration.Handlers
 
             var getSkypeTokenUrl = "https://authsvc.teams.microsoft.com/v1.0/authz";
             var getSkypeTokenReq = await _teamsClient.PollyPostAsync(getSkypeTokenUrl, null);
-            //var getSkypeTokenReq = await _teamsClient.PostAsync(getSkypeTokenUrl, null);
             var getSkypeTokenResp = await getSkypeTokenReq.Content.ReadAsStringAsync();
 
             if (getSkypeTokenReq.IsSuccessStatusCode)
@@ -139,15 +128,24 @@ namespace TeamFiltration.Handlers
             return fetchChatLogsDataResp;
         }
 
-        public async Task<UserConversationsResp> GetConversations()
+        public async Task<UserConversationsResp> GetThreads(string meetingId)
         {
-            //TODO: Find the US eq for "no.ng.msg"
-            var getConversationUrl = "https://no.ng.msg.teams.microsoft.com/v1/users/ME/conversations";
+
+            var getConversationUrl = $"https://{TeamsRegion}.ng.msg.teams.microsoft.com/v1/threads/{meetingId}?view=msnp24Equivalent";
             var getConversationsReq = await _teamsClient.PollyGetAsync(getConversationUrl);
             var getConversationResp = await getConversationsReq.Content.ReadAsStringAsync();
             var getConversationDataResp = JsonConvert.DeserializeObject<UserConversationsResp>(getConversationResp);
+            return getConversationDataResp;
+        }
 
 
+        public async Task<UserConversationsResp> GetConversations()
+        {
+
+            var getConversationUrl = $"https://{TeamsRegion}.ng.msg.teams.microsoft.com/v1/users/ME/conversations";
+            var getConversationsReq = await _teamsClient.PollyGetAsync(getConversationUrl);
+            var getConversationResp = await getConversationsReq.Content.ReadAsStringAsync();
+            var getConversationDataResp = JsonConvert.DeserializeObject<UserConversationsResp>(getConversationResp);
             return getConversationDataResp;
         }
 
@@ -160,69 +158,100 @@ namespace TeamFiltration.Handlers
             return workingWithDataResp;
         }
 
-        public async Task<(bool isValid, string objectId, TeamsExtSearchRep responseObject)> EnumUser(string username, string enumUserUrl)
+        public async Task<(bool isValid, string objectId, TeamsExtSearchRep responseObject, Outofofficenote Outofofficenote)> EnumUser(string username, string enumUserUrl)
         {
-
+            Outofofficenote Outofofficenote = new Outofofficenote() { };
             int failedCount = 0;
 
         failedResp:
             //TODO:Add logic to select FireProx endpoint based on current location 
-
-            var enumUserReq = await _teamsClient.PollyGetAsync(enumUserUrl + $"{TeamsRegion}/beta/users/{username}/externalsearchv3");
-
-
-
+            var enumUserReq = await _teamsClient.GetAsync(enumUserUrl + $"{TeamsRegion}/beta/users/{username}/externalsearchv3");
             if (enumUserReq.IsSuccessStatusCode)
             {
 
                 //We got an 200 OK response
                 var userResp = await enumUserReq.Content.ReadAsStringAsync();
 
+
                 //Indication of valid JSOn response
                 if (userResp.Contains("tenantId"))
                 {
                     //get the object
-                    List<TeamsExtSearchRep> responeObject = JsonConvert.DeserializeObject<List<TeamsExtSearchRep>>(userResp);
-                    //Console.WriteLine(JsonConvert.SerializeObject(responeObject, Formatting.Indented));
+                    List<TeamsExtSearchRep> usersFoundObject = JsonConvert.DeserializeObject<List<TeamsExtSearchRep>>(userResp);
+
                     //Any size
-                    if (responeObject.Count() > 0)
+                    if (usersFoundObject.Count() > 0)
                     {
-
-                        if (
-                            //Check that the TenantID is not null
-                            responeObject.FirstOrDefault().tenantId != null
-
-                            //Check that the coExistenceMode is not Unknown
-                            && !responeObject.FirstOrDefault().featureSettings.coExistenceMode.Equals("Unknown")
-
-                            //Check that the Display != Equals email. 
-                            && !responeObject.FirstOrDefault().displayName.Equals(username)
-
-                            //Check that the UPN matches the email your are looking for
-                            && responeObject.FirstOrDefault().userPrincipalName.ToLower().Equals(username.ToLower())
-                            )
+                        foreach (var responeObject in usersFoundObject)
                         {
-                            return (true, responeObject.FirstOrDefault().objectId, responeObject.FirstOrDefault());
+
+
+                            if (
+                                //Check that the TenantID is not null
+                                responeObject.tenantId != null
+
+                                //Check that the coExistenceMode is not Unknown
+                                && !responeObject.featureSettings.coExistenceMode.Equals("Unknown")
+
+                                //Check that the Display != Equals email OR that the UPN = userPrincipalName
+                                && (!responeObject.displayName.Equals(username) || responeObject.userPrincipalName.ToLower().Equals(username.ToLower())))
+                            {
+
+                                try
+                                {
+
+                                    //Check the user presence
+                                    HttpResponseMessage getUserPresence = await _teamsClient.PollyPostAsync(
+                                        $"https://presence.teams.microsoft.com/v1/presence/getpresence/",
+
+                                        new StringContent(
+                                            "[{ \"mri\":\"" + responeObject.mri + "\"}]"
+                                            , Encoding.UTF8
+                                            , "application/json"
+                                            )
+                                        );
+
+
+                                    var getPresenceObject = JsonConvert.DeserializeObject<List<GetPresenceResp>>(await getUserPresence.Content.ReadAsStringAsync());
+
+                                    if (getPresenceObject.FirstOrDefault()?.presence?.calendarData?.isOutOfOffice != null)
+                                    {
+                                        Outofofficenote = getPresenceObject.FirstOrDefault()?.presence?.calendarData.outOfOfficeNote;
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+
+
+                                }
+
+                                return (true, responeObject.objectId, responeObject, Outofofficenote);
+                            }
                         }
                     }
                 }
-                return (false, "", null);
+                return (false, "", null, null);
 
             }
             else if (enumUserReq.StatusCode.Equals(HttpStatusCode.Forbidden))
             {
-                //If we get the forbidden error response, we can assume it's valid!
-                return (true, Guid.NewGuid().ToString(), null);
+                //We got an 200 OK response
+                var userResp = await enumUserReq.Content.ReadAsStringAsync();
+
+                if (userResp.Equals("{\"errorCode\":\"Forbidden\"}"))
+                    //As of 24.04.2023 - Seems like MS have patched this.
+                    //return (false, "", null, null);
+                    return (true, "", null, null);
             }
             else if (enumUserReq.StatusCode.Equals(HttpStatusCode.InternalServerError))
             {
                 failedCount++;
                 if (failedCount > 2)
-                    return (false, "", null);
+                    return (false, "", null, null);
                 else
                     goto failedResp;
             }
-            return (false, "", null);
+            return (false, "", null, null);
 
         }
 
